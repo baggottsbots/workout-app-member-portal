@@ -325,11 +325,18 @@
 
   <script>
     // Single, self-contained loader.
-    // The platform SMS PIN gate verifies the visitor BEFORE this page is served,
-    // and the server filters the sheet by the verified phone (sheetFilterColumn="Phone"),
-    // so this endpoint returns only this member's row(s). No in-page code entry needed.
+    // The platform SMS PIN gate verifies the visitor BEFORE this page is served
+    // (works on paymegpt.com AND on deployed domains like GitHub Pages via injection).
+    // IMPORTANT: read the platform-injected <meta name="sheet-data-url"> first. On a
+    // deployed/cross-origin domain that meta tag carries the verified, domain-correct
+    // (tokenized) URL so per-phone filtering survives. Only fall back to the absolute
+    // URL if the meta tag is absent. Do not force cookie credentials: the endpoint is
+    // token-based and wildcard-CORS, so 'omit' is correct cross-origin.
     (function () {
-      var ENDPOINT = 'https://paymegpt.com/api/public/landing-pages/4484/sheet-data';
+      var metaEl = document.querySelector('meta[name="sheet-data-url"]');
+      var ENDPOINT = (metaEl && metaEl.content) ? metaEl.content
+        : 'https://paymegpt.com/api/public/landing-pages/4484/sheet-data';
+
       var loading = document.getElementById('loading');
       var dashboard = document.getElementById('dashboard');
       var cards = document.getElementById('member-cards');
@@ -378,7 +385,7 @@
 
       function load() {
         hide(emptyState); hide(errorState); show(loading);
-        fetch(ENDPOINT, { headers: { 'Accept': 'application/json' }, credentials: 'same-origin' })
+        fetch(ENDPOINT, { headers: { 'Accept': 'application/json' }, credentials: 'omit' })
           .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
           .then(function (result) {
             var rows = Array.isArray(result) ? result
