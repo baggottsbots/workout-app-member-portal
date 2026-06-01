@@ -324,18 +324,27 @@
   </footer>
 
   <script>
-    // Single, self-contained loader.
-    // The platform SMS PIN gate verifies the visitor BEFORE this page is served
-    // (works on paymegpt.com AND on deployed domains like GitHub Pages via injection).
-    // IMPORTANT: read the platform-injected <meta name="sheet-data-url"> first. On a
-    // deployed/cross-origin domain that meta tag carries the verified, domain-correct
-    // (tokenized) URL so per-phone filtering survives. Only fall back to the absolute
-    // URL if the meta tag is absent. Do not force cookie credentials: the endpoint is
-    // token-based and wildcard-CORS, so 'omit' is correct cross-origin.
+    // Self-contained loader that works on the paymegpt.com domain AND on static
+    // deployments (GitHub Pages / custom domains).
+    //
+    // Identity model (from the platform gate):
+    //   - The gate stores a verified access token in localStorage under
+    //     'lp_pin_<slug>' (and sessionStorage 'lp_access_<slug>').
+    //   - On paymegpt.com the platform serves a populated <meta name="sheet-data-url">
+    //     (already tokenized), so we just use it.
+    //   - On a static export that meta tag is EMPTY, so we attach the stored token to
+    //     the data endpoint ourselves. We try the gate's own param name first
+    //     (pin_access_token), then access_token, so per-phone filtering survives
+    //     cross-origin. Simple GET + credentials:'omit' = no CORS preflight.
     (function () {
+      var SLUG = 'bLtKfx2C8n';
+      var BASE = 'https://paymegpt.com/api/public/landing-pages/4484/sheet-data';
+
       var metaEl = document.querySelector('meta[name="sheet-data-url"]');
-      var ENDPOINT = (metaEl && metaEl.content) ? metaEl.content
-        : 'https://paymegpt.com/api/public/landing-pages/4484/sheet-data';
+      var metaUrl = (metaEl && metaEl.content) ? metaEl.content.trim() : '';
+
+      var token = '';
+      try { token = localStorage.getItem('lp_pin_' + SLUG) || sessionStorage.getItem('lp_access_' + SLUG) || ''; } catch (e) {}
 
       var loading = document.getElementById('loading');
       var dashboard = document.getElementById('dashboard');
@@ -354,6 +363,10 @@
       }
       function show(el) { if (el) el.classList.remove('hidden'); }
       function hide(el) { if (el) el.classList.add('hidden'); }
+      function withParam(url, name, val) {
+        if (!val) return url;
+        return url + (url.indexOf('?') >= 0 ? '&' : '?') + name + '=' + encodeURIComponent(val);
+      }
 
       function card(label, value, hint) {
         return '<article class="glass-card rounded-[1.5rem] p-5">' +
@@ -383,17 +396,41 @@
       function renderEmpty() { hide(loading); hide(dashboard); hide(errorState); cards.innerHTML = ''; show(emptyState); }
       function renderError() { hide(loading); hide(dashboard); hide(emptyState); cards.innerHTML = ''; show(errorState); }
 
+      function rowsFrom(result) {
+        return Array.isArray(result) ? result : (result && (result.data || result.rows || result.values)) || [];
+      }
+      function fetchJson(url) {
+        return fetch(url, { headers: { 'Accept': 'application/json' }, credentials: 'omit' })
+          .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+      }
+
+      function buildCandidates() {
+        var list = [];
+        if (metaUrl) list.push(metaUrl);                         // paymegpt.com serve-time tokenized URL
+        if (token) {
+          list.push(withParam(BASE, 'pin_access_token', token)); // gate's own param convention
+          list.push(withParam(BASE, 'access_token', token));     // common fallback
+        }
+        list.push(BASE);                                         // last resort (same-origin session)
+        return list;
+      }
+
       function load() {
         hide(emptyState); hide(errorState); show(loading);
-        fetch(ENDPOINT, { headers: { 'Accept': 'application/json' }, credentials: 'omit' })
-          .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-          .then(function (result) {
-            var rows = Array.isArray(result) ? result
-              : (result && (result.data || result.rows || result.values)) || [];
-            if (!rows || rows.length === 0) { renderEmpty(); return; }
-            renderRow(rows[0]);
-          })
-          .catch(function (err) { console.error('Sheet data error:', err); renderError(); });
+        var candidates = buildCandidates();
+        var anyOk = false;
+        function tryAt(i) {
+          if (i >= candidates.length) { anyOk ? renderEmpty() : renderError(); return; }
+          fetchJson(candidates[i])
+            .then(function (res) {
+              anyOk = true;
+              var rows = rowsFrom(res);
+              if (rows && rows.length) { renderRow(rows[0]); return; }
+              tryAt(i + 1);
+            })
+            .catch(function (err) { console.error('Sheet data error:', err); tryAt(i + 1); });
+        }
+        tryAt(0);
       }
 
       var retry = document.getElementById('retry-btn');
